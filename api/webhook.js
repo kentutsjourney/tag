@@ -12,13 +12,75 @@ const OWNER_ID = 1382446968;
 const EMOJIS = ["🔥", "✨", "🌟", "📢", "🎮", "🚀", "👾", "🦊", "⚡", "🐧"];
 
 // ====================================================================
-// MIDDLEWARE VALIDASI: Cek apakah grup ini diizinkan menggunakan bot
+// MIDDLEWARE VALIDASI & CONVERSATION FLOW (MENANGKAP INPUT STEP)
 // ====================================================================
 bot.on("message", async (ctx, next) => {
   const chatId = ctx.chat.id;
   const from = ctx.from;
+  const userId = from.id;
 
-  // Jika di dalam grup atau supergroup, validasi apakah sudah masuk whitelist
+  // HANDLE PRIVATE CHAT FLOW (Untuk Tambah Grup Step-by-Step)
+  if (ctx.chat.type === "private" && userId === OWNER_ID) {
+    // Cek apakah Owner sedang dalam proses input data
+    const { data: session } = await supabase
+      .from("bot_sessions")
+      .select("*")
+      .eq("user_id", userId)
+      .single();
+
+    if (session) {
+      const textInput = ctx.message.text;
+
+      // STEP 1: Menangkap ID Grup, lalu lanjut minta ID Owner
+      if (session.step === "wait_group_id") {
+        const targetChatId = parseInt(textInput);
+        if (isNaN(targetChatId)) {
+          return ctx.reply("❌ ID Grup harus berupa angka! Silakan masukkan ulang ID Grup:");
+        }
+
+        // Simpan ID Grup sementara ke session, naikkan ke step berikutnya
+        await supabase
+          .from("bot_sessions")
+          .update({ step: "wait_owner_id", temp_chat_id: targetChatId })
+          .eq("user_id", userId);
+
+        return ctx.reply("👉 **Step 2:** Sekarang masukkan **ID Owner** untuk grup tersebut:");
+      }
+
+      // STEP 2: Menangkap ID Owner, lalu simpan semuanya ke registered_groups
+      if (session.step === "wait_owner_id") {
+        const targetOwnerId = parseInt(textInput);
+        if (isNaN(targetOwnerId)) {
+          return ctx.reply("❌ ID Owner harus berupa angka! Silakan masukkan ulang ID Owner:");
+        }
+
+        const groupChatId = session.temp_chat_id;
+
+        // Coba dapatkan nama grup dari Telegram API secara otomatis agar dinamis
+        let groupName = `Grup ${groupChatId}`;
+        try {
+          const chatInfo = await ctx.api.getChat(groupChatId);
+          if (chatInfo.title) groupName = chatInfo.title;
+        } catch (e) {
+          // Tetap lanjut menggunakan nama default jika bot belum dimasukkan ke grup tersebut
+        }
+
+        // Insert ke tabel registered_groups
+        await supabase.from("registered_groups").upsert({
+          chat_id: groupChatId,
+          group_name: groupName,
+          owner_group_id: targetOwnerId
+        });
+
+        // Hapus session karena flow sudah selesai
+        await supabase.from("bot_sessions").delete().eq("user_id", userId);
+
+        return ctx.reply(`✅ **Berhasil Terdaftar!**\n\n📌 **Nama:** ${groupName}\n🆔 **ID Grup:** \`${groupChatId}\`\n👑 **ID Owner:** \`${targetOwnerId}\``, { parse_mode: "Markdown" });
+      }
+    }
+  }
+
+  // VALIDASI WHITELIST DI DALAM GRUP
   if (ctx.chat.type === "group" || ctx.chat.type === "supergroup") {
     const { data: group } = await supabase
       .from("registered_groups")
@@ -26,10 +88,8 @@ bot.on("message", async (ctx, next) => {
       .eq("chat_id", chatId)
       .single();
 
-    // Jika grup belum terdaftar di database, bot akan diam (silent mode)
-    if (!group) return;
+    if (!group) return; // Silent mode jika grup tidak terdaftar
 
-    // Jika grup terdaftar, simpan/update data member yang aktif seperti biasa
     await supabase.from("group_members").upsert({
       user_id: from.id,
       username: from.username || null,
@@ -41,15 +101,17 @@ bot.on("message", async (ctx, next) => {
 });
 
 // ====================================================================
-// FITUR 1: PERINTAH /start (Hanya untuk Private Chat)
+// FITUR 1: PERINTAH /start (Private Chat Only)
 // ====================================================================
 bot.command("start", async (ctx) => {
   if (ctx.chat.type !== "private") return;
 
   const userId = ctx.from.id;
 
+  // Hapus sisa-sisa session lama jika ada agar reset kembali
+  await supabase.from("bot_sessions").delete().eq("user_id", userId);
+
   if (userId === OWNER_ID) {
-    // Menu khusus jika KAMU yang melakukan /start
     const keyboard = new InlineKeyboard()
       .text("➕ Tambah Grup", "add_group")
       .text("❌ Hapus Grup", "list_delete_group");
@@ -59,7 +121,6 @@ bot.command("start", async (ctx) => {
       { reply_markup: keyboard }
     );
   } else {
-    // Menu jika USER LAIN yang melakukan /start
     await ctx.reply("anda ingin menambahkan bot ? info : @arikamukunaon");
   }
 });
@@ -70,7 +131,7 @@ bot.command("start", async (ctx) => {
 bot.command("setting", async (ctx) => {
   const userId = ctx.from.id;
 
-  // 1. Jika diketik oleh KAMU (Owner Bot) -> Munculkan semua list grup terdaftar
+  // 1. Jika diketik oleh KAMU (Owner Bot)
   if (userId === OWNER_ID) {
     const { data: groups } = await supabase.from("registered_groups").select("*");
     
@@ -107,7 +168,7 @@ bot.command("setting", async (ctx) => {
     });
   }
 
-  // 3. Jika diketik oleh user biasa / owner grup yang belum didaftarkan
+  // 3. Jika diketik oleh user biasa / belum terdaftar
   return ctx.reply(
     "anda belum mendaftarkan grup anda kirim id grup dan id anda ke owner bot nya @arikamukunaon"
   );
@@ -120,13 +181,17 @@ bot.on("callback_query:data", async (ctx) => {
   const data = ctx.callbackQuery.data;
   const userId = ctx.from.id;
 
-  // --- Opsi Owner: Petunjuk Tambah Grup ---
+  // --- Opsi Owner: Memulai Flow Tambah Grup ---
   if (data === "add_group" && userId === OWNER_ID) {
     await ctx.answerCallbackQuery();
-    return ctx.reply(
-      "Untuk menambahkan akses grup, silakan masukkan data `chat_id`, `group_name`, dan `owner_group_id` langsung ke dalam tabel `registered_groups` di dashboard Supabase kamu.",
-      { parse_mode: "Markdown" }
-    );
+    
+    // Set status session awal ke 'wait_group_id'
+    await supabase.from("bot_sessions").upsert({
+      user_id: userId,
+      step: "wait_group_id"
+    });
+
+    return ctx.reply("👉 **Step 1:** Silakan masukkan **ID Grup** yang ingin kamu daftarkan:");
   }
 
   // --- Opsi Owner: List Hapus Grup ---
@@ -147,7 +212,7 @@ bot.on("callback_query:data", async (ctx) => {
     return ctx.editMessageText("Pilih grup yang ingin dihapus dari sistem whitelist:", { reply_markup: keyboard });
   }
 
-  // Eksekusi Aksi Hapus Grup
+  // Eksekusi Hapus Grup
   if (data.startsWith("delete_g:") && userId === OWNER_ID) {
     await ctx.answerCallbackQuery();
     const targetChatId = data.split(":")[1];
@@ -165,12 +230,11 @@ bot.on("callback_query:data", async (ctx) => {
     return ctx.editMessageText("hi owner ganteng 😎, mau ngapain nih skrg?", { reply_markup: keyboard });
   }
 
-  // --- Menu Manajemen Grup (Bisa diakses Owner Bot & Owner Grup) ---
+  // --- Menu Manajemen Grup ---
   if (data.startsWith("manage_group:")) {
     await ctx.answerCallbackQuery();
     const targetChatId = data.split(":")[1];
 
-    // Validasi hak akses kepemilikan
     const { data: group } = await supabase.from("registered_groups").select("*").eq("chat_id", targetChatId).single();
     if (!group || (userId !== OWNER_ID && group.owner_group_id !== userId)) {
       return ctx.reply("Anda tidak memiliki akses ke menu grup ini.");
@@ -189,25 +253,16 @@ bot.on("callback_query:data", async (ctx) => {
     const targetChatId = data.split(":")[1];
 
     try {
-      // Ambil seluruh admin asli dari Telegram secara real-time
       const admins = await ctx.api.getChatAdministrators(targetChatId);
-      
-      // Ambil data admin yang sudah diberikan centang (izin) di database
       const { data: allowed } = await supabase.from("allowed_admins").select("user_id").eq("chat_id", targetChatId);
       const allowedIds = allowed ? allowed.map(a => a.user_id) : [];
 
       const keyboard = new InlineKeyboard();
-
       admins.forEach((adm) => {
-        if (adm.user.is_bot) return; // Lewati jika berupa bot
-        
+        if (adm.user.is_bot) return;
         const isAllowed = allowedIds.includes(adm.user.id);
         const statusCheck = isAllowed ? "✅" : "❌";
-        
-        keyboard.text(
-          `${statusCheck} ${adm.user.first_name}`, 
-          `toggle_admin:${targetChatId}:${adm.user.id}`
-        ).row();
+        keyboard.text(`${statusCheck} ${adm.user.first_name}`, `toggle_admin:${targetChatId}:${adm.user.id}`).row();
       });
 
       return ctx.editMessageText("Klik nama admin di bawah untuk memberi akses (✅) atau mencabut akses (❌) bot tag:", {
@@ -218,12 +273,11 @@ bot.on("callback_query:data", async (ctx) => {
     }
   }
 
-  // --- Toggle (Beri/Cabut) Izin Admin ---
+  // --- Toggle Izin Admin ---
   if (data.startsWith("toggle_admin:")) {
     await ctx.answerCallbackQuery();
     const [_, targetChatId, targetUserId] = data.split(":");
 
-    // Cek status perizinan admin tersebut saat ini di database
     const { data: exist } = await supabase
       .from("allowed_admins")
       .select("*")
@@ -232,14 +286,11 @@ bot.on("callback_query:data", async (ctx) => {
       .single();
 
     if (exist) {
-      // Jika statusnya sudah ada (aktif), maka cabut perizinannya
       await supabase.from("allowed_admins").delete().eq("chat_id", targetChatId).eq("user_id", targetUserId);
     } else {
-      // Jika statusnya belum ada (nonaktif), masukkan ke dalam tabel izin
       await supabase.from("allowed_admins").insert({ chat_id: targetChatId, user_id: targetUserId });
     }
 
-    // Refresh render tombol daftar admin agar tandanya langsung berubah secara real-time
     const admins = await ctx.api.getChatAdministrators(targetChatId);
     const { data: allowed } = await supabase.from("allowed_admins").select("user_id").eq("chat_id", targetChatId);
     const allowedIds = allowed ? allowed.map(a => a.user_id) : [];
@@ -259,20 +310,17 @@ bot.on("callback_query:data", async (ctx) => {
 });
 
 // ====================================================================
-// LOGIC PENGECEKAN HAK AKSES PERINTAH TAG (/kabehan & /inti)
+// LOGIC PENGECEKAN HAK AKSES PERINTAH TAG
 // ====================================================================
 const hasTagAccess = async (ctx) => {
   const userId = ctx.from.id;
   const chatId = ctx.chat.id;
 
-  // 1. Owner Bot selalu mendapatkan hak akses penuh
   if (userId === OWNER_ID) return true;
 
-  // 2. Owner Grup bersangkutan selalu mendapatkan hak akses penuh
   const { data: group } = await supabase.from("registered_groups").select("owner_group_id").eq("chat_id", chatId).single();
   if (group && group.owner_group_id === userId) return true;
 
-  // 3. Admin grup yang sudah dicentang (✅) di dalam database /setting
   const { data: allowedAdmin } = await supabase
     .from("allowed_admins")
     .select("*")
@@ -281,11 +329,9 @@ const hasTagAccess = async (ctx) => {
     .single();
     
   if (allowedAdmin) return true;
-
   return false;
 };
 
-// --- Perintah /kabehan ---
 bot.command("kabehan", async (ctx) => {
   if (!(await hasTagAccess(ctx))) {
     return ctx.reply("❌ Anda tidak memiliki izin untuk menggunakan perintah tag di grup ini!");
@@ -306,7 +352,6 @@ bot.command("kabehan", async (ctx) => {
   await ctx.reply(mentionText, { parse_mode: "HTML" });
 });
 
-// --- Perintah /inti ---
 bot.command("inti", async (ctx) => {
   if (!(await hasTagAccess(ctx))) {
     return ctx.reply("❌ Anda tidak memiliki izin untuk menggunakan perintah tag di grup ini!");
@@ -328,9 +373,7 @@ bot.command("inti", async (ctx) => {
   }
 });
 
-// ====================================================================
-// WEBHOOK EXPORT HANDLER (Aman dari crash GET request)
-// ====================================================================
+// Vercel Serverless Webhook Export Handler
 const handleWebhook = webhookCallback(bot, "http");
 export default async (req, res) => {
   if (req.method === "GET") {
