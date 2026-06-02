@@ -6,7 +6,7 @@ const bot = new Bot(process.env.BOT_TOKEN);
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 
 // Ganti dengan ID Telegram kamu agar perintah hanya bisa dieksekusi olehmu
-const OWNER_ID = 123456789; 
+const OWNER_ID = 1382446968; 
 
 // Kumpulan emoji random untuk menyamarkan tag
 const EMOJIS = ["🔥", "✨", "🌟", "📢", "🎮", "🚀", "👾", "🦊", "⚡", "🐧"];
