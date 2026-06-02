@@ -58,7 +58,7 @@ bot.command("kabehan", async (ctx) => {
 
   // Gabungkan tag dengan emoji random
   members.forEach((member) => {
-    const randomEmoji = EMOJIS[Math.floor(Math.random() * Emojis.length)];
+    const randomEmoji = EMOJIS[Math.floor(Math.random() * EMOJIS.length)];
     mentionText += `<a href="tg://user?id=${member.user_id}">${randomEmoji}</a> `;
   });
 
@@ -89,7 +89,7 @@ bot.command("inti", async (ctx) => {
 
     // Gabungkan tag admin dengan emoji random
     administrators.forEach((admin) => {
-      const randomEmoji = EMOJIS[Math.floor(Math.random() * Emojis.length)];
+      const randomEmoji = EMOJIS[Math.floor(Math.random() * EMOJIS.length)];
       mentionText += `<a href="tg://user?id=${admin.user.id}">${randomEmoji}</a> `;
     });
 
