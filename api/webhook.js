@@ -1,5 +1,5 @@
 import { Bot, webhookCallback } from "grammy";
-import { createClient } from "@supabase/supabase-backend-js"; // Atau @supabase/supabase-js
+import { createClient } from "@supabase/supabase-js"; // Atau @supabase/supabase-js
 
 // Inisialisasi Bot dan Supabase
 const bot = new Bot(process.env.BOT_TOKEN);
